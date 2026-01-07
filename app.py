@@ -48,7 +48,7 @@ st.markdown("""
 # 擴充書卷對照表 (確保覆蓋所有縮寫)
 BOOK_MAP = {
     # 英文縮寫
-    "Mt": "Matthew", "Mk": "Mark", "Lk": "Luke", "Jn": "John",
+    "Mt": "Matthew", "Mk": "Mark", "Lk": "Luke", "Jn": "John","Jn": "約翰",
     "Mat": "Matthew", "Mrk": "Mark", "Luk": "Luke", "Jhn": "John",
     # 中文縮寫
     "太": "Matthew", "可": "Mark", "路": "Luke", "約": "John",
