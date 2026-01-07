@@ -122,3 +122,149 @@ def main():
                 
                 # 儲存資料供預覽與下載
                 event_list = []
+                for _, row in day_events.iterrows():
+                    event_list.append({
+                        "id": row['EventID'],
+                        "name": row['事件名稱'],
+                        "ref": row['經文總覽']
+                    })
+                
+                plan_preview[current_day] = event_list
+                idx = end_idx
+                current_day += 1
+
+            # 顯示下載按鈕
+            ics_string = create_ics_file(plan_preview, start_date)
+            st.success(f"已成功規劃 {days} 天的旅程！")
+            
+            st.download_button(
+                label="📅 加入我的行事曆 (下載 .ics 檔)",
+                data=ics_string,
+                file_name="ReJesus_Reading_Plan.ics",
+                mime="text/calendar"
+            )
+            
+            # 顯示預覽表格
+            st.subheader("📋 計畫預覽")
+            for d, evs in list(plan_preview.items())[:5]: # 只顯示前5天
+                with st.expander(f"Day {d} (預計閱讀 {len(evs)} 個事件)"):
+                    for e in evs:
+                        st.markdown(f"- **{e['name']}** : {e['ref']}")
+            if days > 5:
+                st.caption("... (後續天數請下載行事曆查看)")
+
+    # === 功能 2: 聖經知識王 (Gamification) ===
+    elif menu == "🏆 聖經知識王":
+        st.header("🏆 挑戰：你有多認識耶穌？")
+        st.markdown("測試看看你對耶穌生平細節的熟悉度！")
+        
+        # 初始化 Session State
+        if 'quiz_q' not in st.session_state:
+            st.session_state.quiz_q = None
+            st.session_state.quiz_opt = []
+            st.session_state.quiz_ans = None
+            st.session_state.quiz_revealed = False
+
+        # 出題邏輯
+        if st.session_state.quiz_q is None or st.button("🔄 下一題"):
+            # 隨機選一個事件
+            target = df.sample(1).iloc[0]
+            st.session_state.quiz_ans = target['地點']
+            
+            # 題目：這個事件發生在哪裡？
+            st.session_state.quiz_q = f"請問 **「{target['事件名稱']}」** 發生在哪裡？"
+            st.session_state.quiz_target_row = target
+            
+            # 產生選項 (1個正確 + 3個錯誤)
+            options = set([target['地點']])
+            while len(options) < 4:
+                options.add(df.sample(1).iloc[0]['地點'])
+            st.session_state.quiz_opt = list(options)
+            st.session_state.quiz_revealed = False
+            
+            # 強制刷新按鈕狀態
+            st.rerun()
+
+        # 顯示題目
+        st.markdown(f"### ❓ {st.session_state.quiz_q}")
+        st.markdown(f"> 提示：{st.session_state.quiz_target_row['福音中心']}")
+        
+        # 顯示選項按鈕
+        if not st.session_state.quiz_revealed:
+            cols = st.columns(2)
+            for i, opt in enumerate(st.session_state.quiz_opt):
+                if cols[i % 2].button(opt, key=f"opt_{i}"):
+                    if opt == st.session_state.quiz_ans:
+                        st.success(f"🎉 答對了！就是 {opt}！")
+                        st.balloons()
+                    else:
+                        st.error(f"❌ 答錯了... 正確答案是 {st.session_state.quiz_ans}")
+                    
+                    st.session_state.quiz_revealed = True
+                    st.rerun()
+        else:
+            # 揭曉答案後的畫面
+            st.info(f"正確答案：**{st.session_state.quiz_ans}**")
+            st.markdown("---")
+            st.markdown(f"**📖 事件詳情**：")
+            st.write(st.session_state.quiz_target_row['事件名稱'])
+            st.caption(st.session_state.quiz_target_row['經文總覽'])
+
+    # === 功能 3: 神學熱力圖 (Analytics) ===
+    elif menu == "📊 神學熱力圖":
+        st.header("📊 地點 vs 神學主題 透視")
+        st.markdown("這張圖表展示了耶穌在「不同地點」主要都在教導或經歷「什麼主題」。圓點越大/顏色越深，代表事件越多。")
+        
+        # 資料聚合
+        heatmap_data = df.groupby(['地點', '神學主題']).size().reset_index(name='次數')
+        
+        # 過濾掉次數太少的，避免圖表太亂
+        heatmap_data = heatmap_data[heatmap_data['次數'] > 0]
+        
+        # Altair 圖表
+        chart = alt.Chart(heatmap_data).mark_circle().encode(
+            x=alt.X('地點', sort=None),
+            y=alt.Y('神學主題', sort=None),
+            size='次數',
+            color=alt.Color('次數', scale=alt.Scale(scheme='orangered')),
+            tooltip=['地點', '神學主題', '次數']
+        ).properties(
+            height=600
+        ).interactive()
+        
+        st.altair_chart(chart, use_container_width=True)
+        st.info("💡 觀察：你可以看到「耶路撒冷」集中了許多關於「受難、彌賽亞」的主題，而「加利利」則更多關於「神蹟、呼召」。")
+
+    # === 功能 4: AI 導覽員 (Chat - 保留) ===
+    elif menu == "💬 AI 導覽員":
+        st.header("💬 與資料對話")
+        st.markdown("輸入你的感受或關鍵字，讓系統為你尋找相關經文。")
+        
+        # 簡易聊天邏輯
+        if "messages" not in st.session_state:
+            st.session_state.messages = [{"role": "assistant", "content": "平安！您今天想了解耶穌的什麼事蹟？或是有什麼心情想分享？"}]
+
+        for msg in st.session_state.messages:
+            st.chat_message(msg["role"]).write(msg["content"])
+
+        if prompt := st.chat_input("輸入關鍵字 (例如: 焦慮, 信心, 醫治)..."):
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            st.chat_message("user").write(prompt)
+            
+            # 搜尋
+            mask = df.apply(lambda r: prompt in str(r['事件名稱']) or prompt in str(r['福音中心']) or prompt in str(r['神學主題']), axis=1)
+            res = df[mask]
+            
+            if not res.empty:
+                reply = f"找到 {len(res)} 筆相關資料：\n\n"
+                for i, row in res.head(3).iterrows():
+                    reply += f"🔹 **{row['事件名稱']}** ({row['地點']})\n> {row['福音中心']}\n\n"
+                reply += "..."
+            else:
+                reply = "抱歉，資料庫中暫時沒有找到直接相關的事件。試試看「神蹟」或「禱告」？"
+            
+            st.session_state.messages.append({"role": "assistant", "content": reply})
+            st.chat_message("assistant").write(reply)
+
+if __name__ == "__main__":
+    main()
