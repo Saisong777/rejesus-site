@@ -1,33 +1,40 @@
 import streamlit as st
 import pandas as pd
-import altair as alt
 import requests
-from gtts import gTTS
+import altair as alt
+from opencc import OpenCC
+import time
 from io import BytesIO
 
 # ==========================================
-# 1. 系統與 CSS 設定
+# 1. 系統設定
 # ==========================================
 st.set_page_config(
-    page_title="Re:Jesus - 經文即時版",
+    page_title="Re:Jesus X - 極致聖經版",
     page_icon="✝️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
+# 專業繁簡轉換器 (S2TWP: Simplified to Traditional Taiwan with Phrases)
+cc = OpenCC('s2twp')
+
 st.markdown("""
 <style>
-    .highlight-box {background-color: #f0f7ff; padding: 15px; border-radius: 8px; border: 1px solid #cce5ff;}
-    .verse-text {font-size: 1.1em; line-height: 1.6; color: #2c3e50; background-color: #fdfdfd; padding: 10px; border-left: 4px solid #4a90e2;}
-    .stButton button {width: 100%;}
+    .highlight-box {background-color: #f8f9fa; padding: 20px; border-radius: 10px; border-left: 5px solid #4a90e2; box-shadow: 0 2px 5px rgba(0,0,0,0.05);}
+    .verse-content {font-size: 1.15em; line-height: 1.7; color: #212529; background-color: white; padding: 15px; border-radius: 5px; border: 1px solid #dee2e6;}
+    .verse-ref {font-weight: bold; color: #6c757d; margin-bottom: 5px; display: block;}
+    .stTabs [data-baseweb="tab-list"] { gap: 10px; }
+    .stTabs [data-baseweb="tab"] { border-radius: 4px; padding: 5px 15px; background-color: #f1f3f5; }
+    .stTabs [aria-selected="true"] { background-color: #4a90e2; color: white; }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 資料庫與對照表
+# 2. 資料處理核心
 # ==========================================
 
-# 書卷名轉換表 (縮寫 -> API 英文名)
+# 書卷映射表 (CSV縮寫 -> API全名)
 BOOK_MAP = {
     "Mt": "Matthew", "Mk": "Mark", "Lk": "Luke", "Jn": "John",
     "太": "Matthew", "可": "Mark", "路": "Luke", "約": "John"
@@ -39,189 +46,184 @@ LOCATION_COORDS = {
     "迦百農": [32.8810, 35.5749], "伯利恆": [31.7049, 35.2038], "加利利": [32.8, 35.6],
     "加利利海": [32.82, 35.58], "橄欖山": [31.7791, 35.2435], "馬可樓": [31.7717, 35.2294],
     "耶利哥": [31.856, 35.444], "撒馬利亞": [32.1848, 35.2546], "迦拿": [32.7445, 35.3375],
-    "格拉森": [32.7937, 35.6534], "伯大尼": [31.7716, 35.2604], "以馬忤斯": [31.8396, 35.0118]
+    "格拉森": [32.7937, 35.6534], "伯大尼": [31.7716, 35.2604]
 }
-
-# 簡單的繁簡轉換字典 (修正 API 常見簡體字)
-TC_CONVERT = {
-    "耶穌": "耶穌", "祂": "祂", "神": "神", "灵": "靈", "义": "義", "爱": "愛",
-    "见": "見", "体": "體", "国": "國", "书": "書", "听": "聽", "门": "門",
-    "祷": "禱", "应": "應", "显": "顯", "据": "據", "圣": "聖", "稣": "穌"
-}
-
-# ==========================================
-# 3. 核心函數庫
-# ==========================================
 
 @st.cache_data
 def load_data():
     try:
         df = pd.read_csv("data.csv")
+        # 預處理：確認有哪些書卷
+        for g in ['太', '可', '路', '約']:
+            df[f'有_{g}'] = df[f'經文_{g}'].notna()
+        
+        # 座標處理
         df['lat'] = df['地點'].map(lambda x: LOCATION_COORDS.get(x, [None, None])[0])
         df['lon'] = df['地點'].map(lambda x: LOCATION_COORDS.get(x, [None, None])[1])
         return df
     except FileNotFoundError: return None
 
-@st.cache_data(ttl=3600) # 快取1小時，避免重複呼叫 API
-def fetch_bible_text(ref_string):
-    """
-    呼叫公開 API 抓取經文
-    輸入: "Mt 5:3" 或 "太 5:3"
-    輸出: 經文文字
-    """
-    if pd.isna(ref_string) or str(ref_string) == "nan":
-        return None
-
+# --- 經文抓取核心 (最複雜的部分) ---
+@st.cache_data(ttl=86400, show_spinner=False) # 快取 24 小時
+def fetch_single_verse_text(ref_string):
+    """抓取單一段經文並轉換繁體"""
+    if pd.isna(ref_string): return None
+    
+    # 清洗經文格式 (移除多餘空格)
+    ref_string = str(ref_string).strip()
+    
     try:
-        # 1. 簡單解析 (例如 "Mt 5:3-10")
-        parts = str(ref_string).split()
-        book_abbr = parts[0] # "Mt"
-        chapter_verse = parts[1] if len(parts) > 1 else "" # "5:3-10"
+        # 1. 拆解書卷與章節 (例如 "Mt 5:3-10")
+        parts = ref_string.split(maxsplit=1)
+        book_abbr = parts[0]
+        chapter_verse = parts[1] if len(parts) > 1 else ""
         
-        # 轉換書卷名
+        # 2. 轉換書卷名為英文 (API需求)
         api_book = BOOK_MAP.get(book_abbr, book_abbr)
         
-        # 2. 呼叫 bible-api.com (免費、免金鑰)
-        # 格式: https://bible-api.com/Matthew+5:3-10?translation=cuv
+        # 3. 呼叫 API
         url = f"https://bible-api.com/{api_book}+{chapter_verse}?translation=cuv"
-        response = requests.get(url, timeout=2)
+        response = requests.get(url, timeout=3)
         
         if response.status_code == 200:
             data = response.json()
             raw_text = data['text']
-            
-            # 3. 簡單繁簡處理
-            for s, t in TC_CONVERT.items():
-                raw_text = raw_text.replace(s, t) # 如果原文是簡體，盡量轉回常用繁體
-                
-            return raw_text
+            # 4. 關鍵步驟：使用 OpenCC 進行完美的繁簡轉換
+            return cc.convert(raw_text)
         else:
-            return "（無法自動抓取此段經文，請點擊下方按鈕前往閱讀）"
-    except:
+            return None
+    except Exception as e:
         return None
 
-def text_to_speech(text):
-    try:
-        tts = gTTS(text=text, lang='zh-TW')
-        fp = BytesIO()
-        tts.write_to_fp(fp)
-        return fp
-    except: return None
-
 # ==========================================
-# 4. UI 顯示元件
+# 3. UI 顯示元件
 # ==========================================
 
-def render_event_card(row):
-    """渲染單一事件卡片，包含經文抓取功能"""
-    with st.container():
-        st.markdown(f"""
-        <div class="highlight-box">
-            <h3>{row['事件名稱']}</h3>
-            <p style="color:#666">📍 {row['地點']} | 🗓️ {row['季節']}</p>
-            <p style="font-size:1.1em; font-weight:bold;">{row['福音中心']}</p>
-        </div>
-        """, unsafe_allow_html=True)
+def render_full_event(row):
+    """顯示完整的事件卡片，包含四福音分頁"""
+    
+    # 1. 基本資訊卡
+    st.markdown(f"""
+    <div class="highlight-box">
+        <h3>{row['EventID']} | {row['事件名稱']}</h3>
+        <p><b>📍 {row['地點']} | 🗓️ {row['季節']}</b></p>
+        <p style="font-size:1.2em; color:#2c3e50;">{row['福音中心']}</p>
+        <hr style="margin: 10px 0;">
+        <p style="font-size:0.9em; color:#666;">神學主題：{row['神學主題']} | 焦點：{row['焦點']}</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # 2. 經文展開區 (平行對照)
+    with st.expander(f"📖 展開閱讀經文 (共 {row['經文總覽']})", expanded=False):
         
-        # --- 經文互動區 (核心修改) ---
-        ref = row['經文總覽']
-        with st.expander(f"📖 閱讀經文 ({ref})"):
-            # 1. 嘗試抓取
-            fetched_text = fetch_bible_text(ref)
+        # 檢查哪卷書有經文
+        gospels = [
+            ("馬太", row['經文_太']), 
+            ("馬可", row['經文_可']), 
+            ("路加", row['經文_路']), 
+            ("約翰", row['經文_約'])
+        ]
+        
+        # 過濾出有內容的書卷
+        active_gospels = [(name, ref) for name, ref in gospels if pd.notna(ref)]
+        
+        if not active_gospels:
+            st.warning("此事件無明確經文引用")
+        else:
+            # 建立分頁
+            tabs = st.tabs([f"{name} ({ref})" for name, ref in active_gospels])
             
-            if fetched_text and "無法" not in fetched_text:
-                st.markdown(f"<div class='verse-text'>{fetched_text}</div>", unsafe_allow_html=True)
-                st.caption("來源: CUV (自動抓取，可能包含簡體字)")
-            else:
-                st.warning("此經文格式較複雜，建議直接前往網站閱讀。")
-            
-            # 2. 提供外部連結 (備案)
-            # 建立 YouVersion 連結
-            yv_book = BOOK_MAP.get(str(ref).split()[0], "MAT")[:3].upper() # 轉成 MAT, MRK
-            yv_url = f"https://www.bible.com/zh-TW/bible/46/{yv_book}.1.CUNP"
-            st.link_button("🔗 前往 YouVersion 閱讀完整章節", yv_url)
+            # 在每個分頁中抓取經文
+            for i, (name, ref) in enumerate(active_gospels):
+                with tabs[i]:
+                    with st.spinner(f"正在抓取 {name}福音 {ref}..."):
+                        text = fetch_single_verse_text(ref)
+                        
+                    if text:
+                        st.markdown(f"<span class='verse-ref'>{name}福音 {ref}</span>", unsafe_allow_html=True)
+                        st.markdown(f"<div class='verse-content'>{text}</div>", unsafe_allow_html=True)
+                        
+                        # YouVersion 外部連結 (備案)
+                        book_code = BOOK_MAP.get(ref.split()[0], "MAT")[:3].upper()
+                        url = f"https://www.bible.com/zh-TW/bible/46/{book_code}.1.CUNP"
+                        st.caption(f"[🔗 前往 YouVersion 閱讀全章]({url})")
+                    else:
+                        st.error(f"無法自動抓取 {ref}，可能是格式過於複雜。")
+                        st.link_button("直接前往線上聖經閱讀", "https://www.bible.com/zh-TW/bible/46/MAT.1.CUNP")
 
-        # 語音按鈕
-        if st.button("🔊 聽聽看", key=f"btn_{row['EventID']}"):
-            txt = f"{row['事件名稱']}。{row['福音中心']}"
-            audio = text_to_speech(txt)
-            if audio: st.audio(audio)
-            
-        st.divider()
+    st.divider()
 
 # ==========================================
-# 5. 主程式
+# 4. 主程式邏輯
 # ==========================================
 def main():
     df = load_data()
-    if df is None: st.error("❌ 找不到 data.csv"); return
+    if df is None: st.error("請確認 data.csv 是否存在"); return
 
     with st.sidebar:
-        st.title("✝️ Re:Jesus 9.0")
-        menu = st.radio("功能選單", ["🏠 首頁總覽", "🔍 資料庫查詢", "👣 主題路徑", "💊 生命處方", "🗺️ 地圖"])
+        st.title("✝️ Re:Jesus X")
+        st.caption("極致聖經整合版")
+        
+        menu = st.radio("功能導航", [
+            "🏠 平行經文閱讀", 
+            "👣 主題探索", 
+            "🔍 全庫搜尋",
+            "📥 下載完整資料庫 (含經文)"
+        ])
+        
+        st.divider()
+        st.info("💡 提示：點擊事件下方的展開按鈕，即可自動下載並轉換四福音經文。")
 
-    # === 1. 首頁 ===
-    if menu == "🏠 首頁總覽":
-        st.header("🏠 今日靈糧")
-        if st.button("✨ 隨機抽取", type="primary"):
-            st.session_state['daily'] = df.sample(1).iloc[0]
-            
-        if 'daily' in st.session_state:
-            render_event_card(st.session_state['daily'])
+    # === 功能 1: 平行經文閱讀 (主介面) ===
+    if menu == "🏠 平行經文閱讀":
+        st.header("🏠 四福音平行對照")
+        st.markdown("這裡展示耶穌生平的完整紀錄。若該事件在多卷福音書都有記載，您可以點擊分頁進行對照。")
+        
+        # 分頁控制 (避免一次載入太多)
+        page_size = 10
+        total_pages = len(df) // page_size + 1
+        page = st.number_input("選擇頁數", 1, total_pages, 1)
+        
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        
+        current_view = df.iloc[start_idx:end_idx]
+        
+        for _, row in current_view.iterrows():
+            render_full_event(row)
 
-    # === 2. 資料庫查詢 (支援經文顯示) ===
-    elif menu == "🔍 資料庫查詢":
-        st.header("🔍 搜尋資料庫")
-        search = st.text_input("輸入關鍵字 (如: 彼得, 醫治)")
+    # === 功能 2: 主題探索 ===
+    elif menu == "👣 主題探索":
+        st.header("👣 主題路徑")
+        path = st.selectbox("選擇路徑", ["🌟 神蹟之路 (28個事件)", "🔥 受難週 (最後7天)", "⛰️ 登山寶訓"])
         
-        # 篩選
-        out = df.copy()
-        if search:
-            out = out[out.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)]
-        
-        st.markdown(f"找到 **{len(out)}** 筆結果：")
-        
-        # 顯示前 20 筆 (避免 API 呼叫過多)
-        for i, row in out.head(20).iterrows():
-            render_event_card(row)
-            
-        if len(out) > 20:
-            st.info("⚠️ 為了顯示效能，僅列出前 20 筆。請嘗試更精確的關鍵字。")
-
-    # === 3. 主題路徑 ===
-    elif menu == "👣 主題路徑":
-        st.header("👣 主題探索")
-        path = st.selectbox("選擇路徑", ["🌟 神蹟之路", "🔥 受難週", "⛰️ 登山寶訓"])
-        
-        # 簡易篩選邏輯
-        if path == "🌟 神蹟之路":
-            mask = df['事件名稱'].str.contains("醫治|趕鬼|復活|變水")
-        elif path == "🔥 受難週":
+        if path.startswith("🌟"):
+            mask = df['事件名稱'].str.contains("醫治|趕鬼|復活|變水|五餅")
+        elif path.startswith("🔥"):
             mask = df['季節'].str.contains("週")
         else:
             mask = df['事件名稱'].str.contains("寶訓|八福")
             
-        path_df = df[mask]
-        st.success(f"此路徑共有 {len(path_df)} 站")
+        subset = df[mask]
+        st.success(f"此路徑包含 {len(subset)} 個事件")
+        for _, row in subset.iterrows():
+            render_full_event(row)
+
+    # === 功能 3: 全庫搜尋 ===
+    elif menu == "🔍 全庫搜尋":
+        st.header("🔍 關鍵字搜尋")
+        q = st.text_input("輸入關鍵字 (例如: 彼得, 信心, 聖殿)")
+        if q:
+            res = df[df.astype(str).apply(lambda x: x.str.contains(q, case=False)).any(axis=1)]
+            st.info(f"找到 {len(res)} 筆結果")
+            for _, row in res.head(20).iterrows(): # 限制顯示數量以保效能
+                render_full_event(row)
+
+    # === 功能 4: 批次下載 (Heavy Task) ===
+    elif menu == "📥 下載完整資料庫 (含經文)":
+        st.header("📥 批次抓取並下載")
+        st.warning("⚠️ 注意：這會觸發大量網路請求，可能需要幾分鐘的時間。請勿頻繁點擊。")
         
-        for i, row in path_df.iterrows():
-            st.markdown(f"#### Step {i+1}: {row['事件名稱']}")
-            render_event_card(row)
-
-    # === 4. 生命處方 ===
-    elif menu == "💊 生命處方":
-        st.header("💊 生命處方")
-        feel = st.selectbox("心情", ["焦慮", "孤單", "憤怒"])
-        key_map = {"焦慮": "平安", "孤單": "接納", "憤怒": "饒恕"}
-        
-        res = df[df['福音中心'].str.contains(key_map[feel])].head(3)
-        for i, row in res.iterrows():
-            render_event_card(row)
-
-    # === 5. 地圖 ===
-    elif menu == "🗺️ 地圖":
-        st.header("🌍 互動地圖")
-        st.map(df.dropna(subset=['lat', 'lon']), size=20, color='#FF4B4B')
-
-if __name__ == "__main__":
-    main()
+        if st.button("🚀 開始抓取所有經文"):
+            progress_bar = st.progress(0)
+            status_text = st
