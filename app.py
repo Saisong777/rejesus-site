@@ -226,4 +226,47 @@ def main():
         
         if st.button("🚀 開始抓取所有經文"):
             progress_bar = st.progress(0)
-            status_text = st
+            status_text = st.empty()
+            
+            # 複製一份資料
+            download_df = df.copy()
+            download_df['完整經文內容'] = ""
+            
+            # 限制抓取數量 (以免 Streamlit Cloud 超時，這裡設為前 50 筆示範，您可自行改為 len(df))
+            # 若要抓全部，請改為 total_items = len(download_df)
+            total_items = 50 
+            status_text.text(f"準備抓取前 {total_items} 筆資料的經文...")
+            
+            for index, row in download_df.head(total_items).iterrows():
+                # 組合所有經文
+                full_text = ""
+                refs = [row['經文_太'], row['經文_可'], row['經文_路'], row['經文_約']]
+                books = ['太', '可', '路', '約']
+                
+                for book, ref in zip(books, refs):
+                    if pd.notna(ref):
+                        txt = fetch_single_verse_text(ref)
+                        if txt:
+                            full_text += f"【{book} {ref}】\n{txt}\n\n"
+                            
+                download_df.at[index, '完整經文內容'] = full_text
+                
+                # 更新進度
+                progress = (index + 1) / total_items
+                progress_bar.progress(progress)
+                status_text.text(f"正在處理: {row['事件名稱']}...")
+                time.sleep(0.1) # 禮貌性延遲
+            
+            st.success("抓取完成！(為避免超時，此模式預設僅抓取前50筆，您可修改程式碼解鎖全部)")
+            
+            # 轉換為 CSV 下載
+            csv = download_df.to_csv(index=False).encode('utf-8-sig')
+            st.download_button(
+                "📥 下載 Excel/CSV 檔案",
+                csv,
+                "ReJesus_Full_Bible_Text.csv",
+                "text/csv"
+            )
+
+if __name__ == "__main__":
+    main()
