@@ -85,12 +85,10 @@ st.markdown("""
 
 # 書卷對照表 (中英縮寫 -> API 格式)
 BOOK_MAP = {
-      # 英文縮寫
-    "Mt": "馬太福音", "Mk": "馬可福音", "Lk": "路加福音", "Jn": "約翰福音",
-    "Mat": "馬太福音", "Mrk": "馬可福音", "Luk": "路加福音", "Jhn": "約翰福音",
-    # 中文縮寫 (您的 CSV 裡面的格式)
-    "太": "馬太福音w", "可": "馬可福音", "路": "路加福音", "約": "約翰福音",
-    "馬太": "馬太福音", "馬可": "馬可福音", "路加": "路加福音", "約翰":"約翰福音",
+    "Mt": "Matthew", "Mk": "Mark", "Lk": "Luke", "Jn": "John",
+    "Mat": "Matthew", "Mrk": "Mark", "Luk": "Luke", "Jhn": "John",
+    "太": "Matthew", "可": "Mark", "路": "Luke", "約": "John",
+    "馬太": "Matthew", "馬可": "Mark", "路加": "Luke", "約翰": "John"
 }
 
 # 地點座標資料 (用於地圖)
@@ -107,7 +105,7 @@ LOCATION_COORDS = {
 # 主題探索路徑定義
 CURATED_PATHS = {
     "🌟 神蹟之路": {"keywords": ["醫治", "趕鬼", "變水", "五餅", "復活"], "desc": "見證耶穌的大能"},
-    "🔥 受難週": {"filter_season": ["週日", "週一", "週二", "週三", "週四", "週五", "週六"], "desc": "最後七天的關鍵時刻"},
+    "🔥 受難週": {"filter_target": "大約日期", "keywords": ["週日", "週一", "週二", "週三", "週四", "週五", "週六"], "desc": "最後七天的關鍵時刻"},
     "⛰️ 登山寶訓": {"keywords": ["八福", "寶訓", "禱告"], "desc": "天國子民的生活準則"}
 }
 
@@ -315,17 +313,18 @@ def main():
         for _, row in out.head(10).iterrows():
             render_card(row)
 
-    # === 3. 主題路徑 ===
+    # === 3. 主題路徑 (修復受難週邏輯) ===
     elif menu == "👣 主題探索路徑":
         st.header("👣 主題路徑")
         path = st.selectbox("選擇旅程", list(CURATED_PATHS.keys()))
         info = CURATED_PATHS[path]
         st.info(info['desc'])
         
-        if "keywords" in info:
-            mask = df.apply(lambda r: any(k in str(r['事件名稱']) for k in info['keywords']), axis=1)
-        else:
-            mask = df['季節'].apply(lambda x: any(d in str(x) for d in info['filter_season']))
+        # 修正後的邏輯：受難週改搜「大約日期」，其他搜「事件名稱」
+        target_col = info.get("filter_target", "事件名稱")
+        
+        # 增強搜尋：同時比對「福音中心」
+        mask = df.apply(lambda r: any(k in str(r[target_col]) or k in str(r['福音中心']) for k in info['keywords']), axis=1)
             
         for i, row in df[mask].reset_index().iterrows():
             with st.expander(f"Step {i+1}: {row['事件名稱']}"):
