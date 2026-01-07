@@ -2,31 +2,103 @@ import streamlit as st
 import pandas as pd
 import requests
 import altair as alt
+import random
 from opencc import OpenCC
-import time
 from io import BytesIO
+from gtts import gTTS
+from datetime import datetime, timedelta
+import uuid
 
 # ==========================================
-# 1. 系統設定
+# 1. 系統設定與 CSS 美學 (Design System)
 # ==========================================
 st.set_page_config(
-    page_title="Re:Jesus X - 極致聖經版",
+    page_title="Re:Jesus | 遇見真實的耶穌",
     page_icon="✝️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# 專業繁簡轉換器 (S2TWP: Simplified to Traditional Taiwan with Phrases)
+# 初始化繁簡轉換器
 cc = OpenCC('s2twp')
 
+# 注入美學 CSS
 st.markdown("""
 <style>
-    .highlight-box {background-color: #f8f9fa; padding: 20px; border-radius: 10px; border-left: 5px solid #4a90e2; box-shadow: 0 2px 5px rgba(0,0,0,0.05);}
-    .verse-content {font-size: 1.15em; line-height: 1.7; color: #212529; background-color: white; padding: 15px; border-radius: 5px; border: 1px solid #dee2e6;}
-    .verse-ref {font-weight: bold; color: #6c757d; margin-bottom: 5px; display: block;}
-    .stTabs [data-baseweb="tab-list"] { gap: 10px; }
-    .stTabs [data-baseweb="tab"] { border-radius: 4px; padding: 5px 15px; background-color: #f1f3f5; }
-    .stTabs [aria-selected="true"] { background-color: #4a90e2; color: white; }
+    /* Google Fonts */
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@400;700&family=Noto+Sans+TC:wght@300;400;700&display=swap');
+
+    /* 全域設定 */
+    .stApp { background-color: #faf9f6; } /* 米白底色 */
+    
+    h1, h2, h3, h4 { font-family: 'Noto Serif TC', serif !important; color: #2c3e50; }
+    p, div, label, span { font-family: 'Noto Sans TC', sans-serif; color: #4a4a4a; }
+
+    /* 卡片設計 (Card UI) */
+    .event-card {
+        background-color: white;
+        padding: 30px;
+        border-radius: 16px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.06);
+        border: 1px solid #f0f0f0;
+        margin-bottom: 25px;
+        transition: transform 0.2s ease-in-out;
+    }
+    .event-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 10px 30px rgba(184, 134, 11, 0.15);
+        border-color: #d4af37;
+    }
+
+    /* 標籤樣式 */
+    .tag {
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 20px;
+        font-size: 0.85em;
+        font-weight: bold;
+        margin-right: 8px;
+    }
+    .tag-season { background-color: #e3f2fd; color: #1565c0; }
+    .tag-loc { background-color: #f3e5f5; color: #7b1fa2; }
+    .tag-theme { background-color: #e8f5e9; color: #2e7d32; }
+
+    /* 經文引用區 */
+    .gospel-quote {
+        font-family: 'Noto Serif TC', serif;
+        font-size: 1.4em;
+        line-height: 1.6;
+        color: #2c3e50;
+        border-left: 5px solid #B8860B; /* 金色邊條 */
+        padding-left: 20px;
+        margin: 20px 0;
+    }
+
+    /* 經文閱讀區 */
+    .verse-box {
+        background-color: #fffbf0;
+        padding: 20px;
+        border-radius: 8px;
+        border: 1px dashed #d4c5a0;
+        font-family: 'Noto Serif TC', serif;
+        font-size: 1.15em;
+        line-height: 1.8;
+        color: #333;
+    }
+
+    /* IG 卡片樣式 */
+    .insta-card {
+        width: 100%; max-width: 400px; aspect-ratio: 4/5;
+        background: linear-gradient(135deg, #2c3e50 0%, #B8860B 100%);
+        color: white; padding: 40px; border-radius: 20px;
+        display: flex; flex-direction: column; justify-content: center; align-items: center;
+        text-align: center; margin: auto; box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+    }
+    .insta-text { font-family: 'Noto Serif TC', serif; font-size: 24px; font-weight: bold; line-height: 1.5; margin-bottom: 20px; color: white;}
+    .insta-ref { font-family: 'Noto Sans TC', sans-serif; font-size: 14px; opacity: 0.8; margin-top: auto;}
+
+    /* 按鈕優化 */
+    .stButton button { border-radius: 30px; border: none; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -34,239 +106,280 @@ st.markdown("""
 # 2. 資料處理核心
 # ==========================================
 
-# 書卷映射表 (CSV縮寫 -> API全名)
+# 擴充版書卷對照表 (確保各種縮寫都能抓到)
 BOOK_MAP = {
     "Mt": "Matthew", "Mk": "Mark", "Lk": "Luke", "Jn": "John",
-    "太": "Matthew", "可": "Mark", "路": "Luke", "約": "John"
+    "Mat": "Matthew", "Mrk": "Mark", "Luk": "Luke", "Jhn": "John",
+    "太": "Matthew", "可": "Mark", "路": "Luke", "約": "John",
+    "馬太": "Matthew", "馬可": "Mark", "路加": "Luke", "約翰": "John"
 }
 
-# 地點座標
+# 地點座標資料庫
 LOCATION_COORDS = {
-    "耶路撒冷": [31.7683, 35.2137], "聖殿": [31.7781, 35.2360], "拿撒勒": [32.7019, 35.3035],
-    "迦百農": [32.8810, 35.5749], "伯利恆": [31.7049, 35.2038], "加利利": [32.8, 35.6],
-    "加利利海": [32.82, 35.58], "橄欖山": [31.7791, 35.2435], "馬可樓": [31.7717, 35.2294],
-    "耶利哥": [31.856, 35.444], "撒馬利亞": [32.1848, 35.2546], "迦拿": [32.7445, 35.3375],
-    "格拉森": [32.7937, 35.6534], "伯大尼": [31.7716, 35.2604]
+    "耶路撒冷": [31.7683, 35.2137], "聖殿": [31.7781, 35.2360], "各各他": [31.7797, 35.2299],
+    "拿撒勒": [32.7019, 35.3035], "迦百農": [32.8810, 35.5749], "伯利恆": [31.7049, 35.2038],
+    "約旦河": [31.856, 35.555], "加利利": [32.8, 35.6], "加利利海": [32.82, 35.58],
+    "八福山": [32.8805, 35.5558], "橄欖山": [31.7791, 35.2435], "馬可樓": [31.7717, 35.2294],
+    "客西馬尼": [31.7794, 35.2401], "耶利哥": [31.856, 35.444], "撒馬利亞": [32.1848, 35.2546],
+    "迦拿": [32.7445, 35.3375], "格拉森": [32.7937, 35.6534], "伯大尼": [31.7716, 35.2604]
 }
 
 @st.cache_data
 def load_data():
     try:
         df = pd.read_csv("data.csv")
-        # 預處理：確認有哪些書卷
+        # 預先處理經文 Flag
         for g in ['太', '可', '路', '約']:
             df[f'有_{g}'] = df[f'經文_{g}'].notna()
         
-        # 座標處理
+        # 處理座標
         df['lat'] = df['地點'].map(lambda x: LOCATION_COORDS.get(x, [None, None])[0])
         df['lon'] = df['地點'].map(lambda x: LOCATION_COORDS.get(x, [None, None])[1])
         return df
     except FileNotFoundError: return None
 
-# --- 經文抓取核心 (最複雜的部分) ---
-@st.cache_data(ttl=86400, show_spinner=False) # 快取 24 小時
-def fetch_single_verse_text(ref_string):
-    """抓取單一段經文並轉換繁體"""
-    if pd.isna(ref_string): return None
-    
-    # 清洗經文格式 (移除多餘空格)
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_bible_text(ref_string):
+    """強健的經文抓取函數"""
+    if pd.isna(ref_string) or str(ref_string).strip() == "": return None
     ref_string = str(ref_string).strip()
     
     try:
-        # 1. 拆解書卷與章節 (例如 "Mt 5:3-10")
+        # 處理縮寫 (如 "Mt5:3" -> "Mt 5:3")
+        import re
+        if " " not in ref_string:
+            ref_string = re.sub(r"([a-zA-Z\u4e00-\u9fa5]+)(\d)", r"\1 \2", ref_string)
+            
         parts = ref_string.split(maxsplit=1)
-        book_abbr = parts[0]
-        chapter_verse = parts[1] if len(parts) > 1 else ""
+        book = parts[0]
+        verse = parts[1] if len(parts) > 1 else ""
         
-        # 2. 轉換書卷名為英文 (API需求)
-        api_book = BOOK_MAP.get(book_abbr, book_abbr)
+        api_book = BOOK_MAP.get(book, book) # 查不到就用原字
         
-        # 3. 呼叫 API
-        url = f"https://bible-api.com/{api_book}+{chapter_verse}?translation=cuv"
-        response = requests.get(url, timeout=3)
+        url = f"https://bible-api.com/{api_book}+{verse}?translation=cuv"
+        resp = requests.get(url, timeout=3)
         
-        if response.status_code == 200:
-            data = response.json()
-            raw_text = data['text']
-            # 4. 關鍵步驟：使用 OpenCC 進行完美的繁簡轉換
-            return cc.convert(raw_text)
-        else:
-            return None
-    except Exception as e:
+        if resp.status_code == 200:
+            text = resp.json().get('text', '')
+            if text: return cc.convert(text) # 繁簡轉換
         return None
+    except: return None
+
+def text_to_speech(text):
+    """文字轉語音"""
+    try:
+        tts = gTTS(text=text, lang='zh-TW')
+        fp = BytesIO()
+        tts.write_to_fp(fp)
+        return fp
+    except: return None
 
 # ==========================================
-# 3. UI 顯示元件
+# 3. UI 渲染元件
 # ==========================================
 
-def render_full_event(row):
-    """顯示完整的事件卡片，包含四福音分頁"""
-    
-    # 1. 基本資訊卡
+def render_card(row):
+    """顯示美化後的事件卡片"""
     st.markdown(f"""
-    <div class="highlight-box">
-        <h3>{row['EventID']} | {row['事件名稱']}</h3>
-        <p><b>📍 {row['地點']} | 🗓️ {row['季節']}</b></p>
-        <p style="font-size:1.2em; color:#2c3e50;">{row['福音中心']}</p>
-        <hr style="margin: 10px 0;">
-        <p style="font-size:0.9em; color:#666;">神學主題：{row['神學主題']} | 焦點：{row['焦點']}</p>
+    <div class="event-card">
+        <div>
+            <span class="tag tag-season">{row['季節']}</span>
+            <span class="tag tag-loc">📍 {row['地點']}</span>
+            <span class="tag tag-theme">💡 {row['神學主題']}</span>
+        </div>
+        <h2 style="margin-top:15px; margin-bottom:10px;">{row['事件名稱']}</h2>
+        <div class="gospel-quote">
+            {row['福音中心']}
+        </div>
+        <div style="text-align: right; font-size: 0.9em; color: #888;">
+            📖 經文出處：{row['經文總覽']}
+        </div>
     </div>
     """, unsafe_allow_html=True)
-    
-    # 2. 經文展開區 (平行對照)
-    with st.expander(f"📖 展開閱讀經文 (共 {row['經文總覽']})", expanded=False):
-        
-        # 檢查哪卷書有經文
-        gospels = [
-            ("馬太", row['經文_太']), 
-            ("馬可", row['經文_可']), 
-            ("路加", row['經文_路']), 
-            ("約翰", row['經文_約'])
-        ]
-        
-        # 過濾出有內容的書卷
-        active_gospels = [(name, ref) for name, ref in gospels if pd.notna(ref)]
-        
-        if not active_gospels:
-            st.warning("此事件無明確經文引用")
-        else:
-            # 建立分頁
-            tabs = st.tabs([f"{name} ({ref})" for name, ref in active_gospels])
-            
-            # 在每個分頁中抓取經文
-            for i, (name, ref) in enumerate(active_gospels):
-                with tabs[i]:
-                    with st.spinner(f"正在抓取 {name}福音 {ref}..."):
-                        text = fetch_single_verse_text(ref)
-                        
-                    if text:
-                        st.markdown(f"<span class='verse-ref'>{name}福音 {ref}</span>", unsafe_allow_html=True)
-                        st.markdown(f"<div class='verse-content'>{text}</div>", unsafe_allow_html=True)
-                        
-                        # YouVersion 外部連結 (備案)
-                        book_code = BOOK_MAP.get(ref.split()[0], "MAT")[:3].upper()
-                        url = f"https://www.bible.com/zh-TW/bible/46/{book_code}.1.CUNP"
-                        st.caption(f"[🔗 前往 YouVersion 閱讀全章]({url})")
-                    else:
-                        st.error(f"無法自動抓取 {ref}，可能是格式過於複雜。")
-                        st.link_button("直接前往線上聖經閱讀", "https://www.bible.com/zh-TW/bible/46/MAT.1.CUNP")
 
-    st.divider()
+    # 互動按鈕區
+    c1, c2 = st.columns([1, 5])
+    
+    # 語音按鈕
+    with c1:
+        if st.button("🔊 聽聽看", key=f"tts_{row['EventID']}"):
+            txt = f"{row['事件名稱']}。{row['福音中心']}。"
+            audio = text_to_speech(txt)
+            if audio: st.audio(audio, format='audio/mp3')
+
+    # 經文閱讀區
+    with c2:
+        with st.expander("📖 展開閱讀經文 (四福音對照)"):
+            gospels = [('馬太', row['經文_太']), ('馬可', row['經文_可']), ('路加', row['經文_路']), ('約翰', row['經文_約'])]
+            active = [(n, r) for n, r in gospels if pd.notna(r)]
+            
+            if active:
+                tabs = st.tabs([f"{n}" for n, r in active])
+                for i, (name, ref) in enumerate(active):
+                    with tabs[i]:
+                        with st.spinner("載入經文中..."):
+                            txt = fetch_bible_text(ref)
+                        if txt:
+                            st.markdown(f"<div class='verse-box'><b>{name} {ref}</b><br>{txt}</div>", unsafe_allow_html=True)
+                        else:
+                            st.warning("無法自動抓取，請點擊下方連結。")
+                            st.markdown(f"[🔗 前往 YouVersion 閱讀 {name} {ref}](https://www.bible.com/zh-TW/bible/46/MAT.1.CUNP)")
+            else:
+                st.info("此事件無明確經文引用。")
 
 # ==========================================
 # 4. 主程式邏輯
 # ==========================================
 def main():
     df = load_data()
-    if df is None: st.error("請確認 data.csv 是否存在"); return
+    if df is None: st.error("❌ 找不到 data.csv，請確認檔案已上傳至 GitHub。"); return
 
+    # --- 側邊欄 ---
     with st.sidebar:
-        st.title("✝️ Re:Jesus X")
-        st.caption("極致聖經整合版")
+        st.markdown("<h1 style='color:#B8860B; text-align:center;'>✝️ Re:Jesus</h1>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align:center; color:#666;'>終極完美版</p>", unsafe_allow_html=True)
+        st.divider()
         
         menu = st.radio("功能導航", [
-            "🏠 平行經文閱讀", 
-            "👣 主題探索", 
-            "🔍 全庫搜尋",
-            "📥 下載完整資料庫 (含經文)"
+            "🏠 探索首頁", 
+            "🔍 資料庫查詢", 
+            "👣 主題探索路徑", 
+            "💊 生命處方籤", 
+            "🎨 IG 金句卡", 
+            "🗺️ 聖地地圖", 
+            "🏆 聖經知識王"
         ])
         
-        st.divider()
-        st.info("💡 提示：點擊事件下方的展開按鈕，即可自動下載並轉換四福音經文。")
+        st.markdown("---")
+        st.caption("Designed for everyone.")
 
-    # === 功能 1: 平行經文閱讀 (主介面) ===
-    if menu == "🏠 平行經文閱讀":
-        st.header("🏠 四福音平行對照")
-        st.markdown("這裡展示耶穌生平的完整紀錄。若該事件在多卷福音書都有記載，您可以點擊分頁進行對照。")
+    # === 1. 首頁 ===
+    if menu == "🏠 探索首頁":
+        st.markdown("""
+        <div style="text-align: center; padding: 40px 20px;">
+            <h1 style="font-size: 3.5em; margin-bottom: 10px; color: #2c3e50;">遇見，真實的耶穌</h1>
+            <p style="font-size: 1.2em; color: #666;">穿越時空，在每一個春夏秋冬裡與祂同行。</p>
+        </div>
+        """, unsafe_allow_html=True)
         
-        # 分頁控制 (避免一次載入太多)
-        page_size = 10
-        total_pages = len(df) // page_size + 1
-        page = st.number_input("選擇頁數", 1, total_pages, 1)
-        
-        start_idx = (page - 1) * page_size
-        end_idx = start_idx + page_size
-        
-        current_view = df.iloc[start_idx:end_idx]
-        
-        for _, row in current_view.iterrows():
-            render_full_event(row)
+        if st.button("✨ 隨機抽取今日靈糧", type="primary", use_container_width=True):
+            st.session_state.rand_row = df.sample(1).iloc[0]
+            
+        if 'rand_row' not in st.session_state:
+            st.session_state.rand_row = df.sample(1).iloc[0]
+            
+        render_card(st.session_state.rand_row)
 
-    # === 功能 2: 主題探索 ===
-    elif menu == "👣 主題探索":
-        st.header("👣 主題路徑")
-        path = st.selectbox("選擇路徑", ["🌟 神蹟之路 (28個事件)", "🔥 受難週 (最後7天)", "⛰️ 登山寶訓"])
-        
-        if path.startswith("🌟"):
-            mask = df['事件名稱'].str.contains("醫治|趕鬼|復活|變水|五餅")
-        elif path.startswith("🔥"):
-            mask = df['季節'].str.contains("週")
-        else:
-            mask = df['事件名稱'].str.contains("寶訓|八福")
-            
-        subset = df[mask]
-        st.success(f"此路徑包含 {len(subset)} 個事件")
-        for _, row in subset.iterrows():
-            render_full_event(row)
+    # === 2. 資料庫查詢 ===
+    elif menu == "🔍 資料庫查詢":
+        st.header("🔍 搜尋資料庫")
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            search = st.text_input("輸入關鍵字 (如：彼得, 信心, 醫治)", placeholder="在此輸入...")
+        with col2:
+            filter_loc = st.multiselect("地點篩選", df['地點'].unique())
 
-    # === 功能 3: 全庫搜尋 ===
-    elif menu == "🔍 全庫搜尋":
-        st.header("🔍 關鍵字搜尋")
-        q = st.text_input("輸入關鍵字 (例如: 彼得, 信心, 聖殿)")
-        if q:
-            res = df[df.astype(str).apply(lambda x: x.str.contains(q, case=False)).any(axis=1)]
-            st.info(f"找到 {len(res)} 筆結果")
-            for _, row in res.head(20).iterrows(): # 限制顯示數量以保效能
-                render_full_event(row)
+        out = df.copy()
+        if search:
+            out = out[out.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)]
+        if filter_loc:
+            out = out[out['地點'].isin(filter_loc)]
+            
+        st.info(f"共找到 {len(out)} 筆資料")
+        for _, row in out.head(15).iterrows(): # 限制顯示數量
+            render_card(row)
 
-    # === 功能 4: 批次下載 (Heavy Task) ===
-    elif menu == "📥 下載完整資料庫 (含經文)":
-        st.header("📥 批次抓取並下載")
-        st.warning("⚠️ 注意：這會觸發大量網路請求，可能需要幾分鐘的時間。請勿頻繁點擊。")
+    # === 3. 主題路徑 ===
+    elif menu == "👣 主題探索路徑":
+        st.header("👣 跟隨耶穌的腳蹤")
+        path = st.selectbox("選擇一條路徑", ["🌟 神蹟之路 (28站)", "🔥 受難週 (最後7天)", "⛰️ 登山寶訓"])
         
-        if st.button("🚀 開始抓取所有經文"):
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+        if "神蹟" in path: mask = df['事件名稱'].str.contains("醫治|趕鬼|復活|變水|五餅")
+        elif "受難" in path: mask = df['季節'].str.contains("週")
+        else: mask = df['事件名稱'].str.contains("寶訓|八福")
+        
+        path_df = df[mask]
+        st.success(f"此旅程包含 {len(path_df)} 個站點")
+        
+        for i, row in path_df.reset_index().iterrows():
+            with st.expander(f"Step {i+1}: {row['事件名稱']} ({row['地點']})"):
+                st.markdown(f"**{row['福音中心']}**")
+                if st.button("查看詳情", key=f"p_{i}"):
+                    st.session_state.rand_row = row
+                    st.rerun() # 跳轉回首頁顯示卡片
+
+    # === 4. 生命處方 ===
+    elif menu == "💊 生命處方籤":
+        st.header("💊 心靈急診室")
+        feeling = st.selectbox("你現在感覺如何？", ["😟 焦慮/擔憂", "😔 孤單/被遺忘", "😡 憤怒/無法原諒", "😫 罪惡感/軟弱"])
+        
+        feel_map = {
+            "😟 焦慮/擔憂": "平安", "😔 孤單/被遺忘": "接納",
+            "😡 憤怒/無法原諒": "饒恕", "😫 罪惡感/軟弱": "悔改"
+        }
+        keyword = feel_map[feeling]
+        
+        st.markdown(f"### 給感到「{feeling.split()[1]}」的你：")
+        res = df[df['福音中心'].str.contains(keyword)].head(3)
+        for _, row in res.iterrows():
+            render_card(row)
+
+    # === 5. IG 金句卡 ===
+    elif menu == "🎨 IG 金句卡":
+        st.header("🎨 製作分享卡片")
+        st.caption("截圖下方卡片，分享至 Instagram 限時動態！")
+        
+        if st.button("🎲 換一句話"):
+            r = df.sample(1).iloc[0]
+            st.session_state.ig_txt = r['福音中心']
+            st.session_state.ig_ref = f"{r['事件名稱']} | {r['經文總覽']}"
             
-            # 複製一份資料
-            download_df = df.copy()
-            download_df['完整經文內容'] = ""
+        if 'ig_txt' not in st.session_state:
+            r = df.sample(1).iloc[0]
+            st.session_state.ig_txt = r['福音中心']
+            st.session_state.ig_ref = f"{r['事件名稱']} | {r['經文總覽']}"
             
-            # 限制抓取數量 (以免 Streamlit Cloud 超時，這裡設為前 50 筆示範，您可自行改為 len(df))
-            # 若要抓全部，請改為 total_items = len(download_df)
-            total_items = 50 
-            status_text.text(f"準備抓取前 {total_items} 筆資料的經文...")
-            
-            for index, row in download_df.head(total_items).iterrows():
-                # 組合所有經文
-                full_text = ""
-                refs = [row['經文_太'], row['經文_可'], row['經文_路'], row['經文_約']]
-                books = ['太', '可', '路', '約']
-                
-                for book, ref in zip(books, refs):
-                    if pd.notna(ref):
-                        txt = fetch_single_verse_text(ref)
-                        if txt:
-                            full_text += f"【{book} {ref}】\n{txt}\n\n"
-                            
-                download_df.at[index, '完整經文內容'] = full_text
-                
-                # 更新進度
-                progress = (index + 1) / total_items
-                progress_bar.progress(progress)
-                status_text.text(f"正在處理: {row['事件名稱']}...")
-                time.sleep(0.1) # 禮貌性延遲
-            
-            st.success("抓取完成！(為避免超時，此模式預設僅抓取前50筆，您可修改程式碼解鎖全部)")
-            
-            # 轉換為 CSV 下載
-            csv = download_df.to_csv(index=False).encode('utf-8-sig')
-            st.download_button(
-                "📥 下載 Excel/CSV 檔案",
-                csv,
-                "ReJesus_Full_Bible_Text.csv",
-                "text/csv"
-            )
+        st.markdown(f"""
+        <div class="insta-card">
+            <div class="insta-text">“{st.session_state.ig_txt}”</div>
+            <div class="insta-ref">{st.session_state.ig_ref}<br>Re:Jesus</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # === 6. 地圖 ===
+    elif menu == "🗺️ 聖地地圖":
+        st.header("🌍 耶穌行蹤地圖")
+        map_df = df.dropna(subset=['lat', 'lon'])
+        st.map(map_df, size=20, color='#B8860B')
+
+    # === 7. 知識王 ===
+    elif menu == "🏆 聖經知識王":
+        st.header("🏆 聖經知識挑戰")
+        if 'quiz_idx' not in st.session_state:
+            st.session_state.quiz_idx = random.randint(0, len(df)-1)
+            st.session_state.quiz_revealed = False
+
+        q_row = df.iloc[st.session_state.quiz_idx]
+        st.markdown(f"### ❓ 題目：**「{q_row['事件名稱']}」** 發生在哪裡？")
+        
+        opts = list(set([q_row['地點']] + df['地點'].sample(3).tolist()))
+        random.shuffle(opts)
+        
+        cols = st.columns(2)
+        for i, opt in enumerate(opts):
+            if cols[i%2].button(opt, key=opt, use_container_width=True):
+                if opt == q_row['地點']:
+                    st.success("🎉 答對了！")
+                    st.balloons()
+                else:
+                    st.error(f"❌ 答錯了... 正確答案是 {q_row['地點']}")
+                st.session_state.quiz_revealed = True
+        
+        if st.session_state.quiz_revealed:
+            if st.button("🔄 下一題", type="primary"):
+                st.session_state.quiz_idx = random.randint(0, len(df)-1)
+                st.session_state.quiz_revealed = False
+                st.rerun()
 
 if __name__ == "__main__":
     main()
