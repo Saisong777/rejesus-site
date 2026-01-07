@@ -1,22 +1,24 @@
 import streamlit as st
 import pandas as pd
 import altair as alt
+import numpy as np
 from datetime import datetime, timedelta
 import uuid
+import random
 
-# --- 1. 網頁設定 ---
+# ==========================================
+# 1. 系統設定與 CSS
+# ==========================================
 st.set_page_config(
-    page_title="Re:Jesus - 每日同行版",
+    page_title="Re:Jesus - 終極全功能版",
     page_icon="✝️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- 2. CSS 與 UI 優化 ---
 st.markdown("""
 <style>
-    .stButton button {width: 100%;}
-    .big-stat {font-size: 2rem; font-weight: bold; color: #4a90e2;}
+    .big-stat {font-size: 1.5rem; font-weight: bold; color: #4a90e2;}
     .card {
         background-color: white;
         padding: 15px;
@@ -25,246 +27,379 @@ st.markdown("""
         margin-bottom: 10px;
         border-left: 4px solid #FF4B4B;
     }
-    .correct-answer {background-color: #d4edda; color: #155724; padding: 10px; border-radius: 5px;}
-    .wrong-answer {background-color: #f8d7da; color: #721c24; padding: 10px; border-radius: 5px;}
+    .highlight-box {background-color: #f0f7ff; padding: 15px; border-radius: 8px; border: 1px solid #cce5ff;}
+    .stButton button {width: 100%;}
 </style>
 """, unsafe_allow_html=True)
 
-# --- 3. 核心函數 ---
+# ==========================================
+# 2. 資料常數與字典 (手動建立的資料庫)
+# ==========================================
+
+# A. 地點座標資料 (用於地圖)
+LOCATION_COORDS = {
+    "耶路撒冷": [31.7683, 35.2137], "聖殿": [31.7781, 35.2360], "各各他": [31.7797, 35.2299],
+    "拿撒勒": [32.7019, 35.3035], "迦百農": [32.8810, 35.5749], "伯利恆": [31.7049, 35.2038],
+    "約旦河": [31.856, 35.555], "加利利": [32.8, 35.6], "加利利海": [32.82, 35.58],
+    "八福山": [32.8805, 35.5558], "橄欖山": [31.7791, 35.2435], "馬可樓": [31.7717, 35.2294],
+    "客西馬尼": [31.7794, 35.2401], "耶利哥": [31.856, 35.444], "撒馬利亞": [32.1848, 35.2546],
+    "迦拿": [32.7445, 35.3375], "拿因城": [32.6300, 35.3400], "格拉森": [32.7937, 35.6534],
+    "該撒利亞腓立比": [33.2486, 35.6917], "伯大尼": [31.7716, 35.2604], "以馬忤斯": [31.8396, 35.0118],
+    "推羅": [33.2709, 35.1963], "西頓": [33.5599, 35.3756], "低加波利": [32.7, 35.8],
+    "比利亞": [32.0, 35.6], "猶大": [31.6, 35.1], "曠野": [31.7, 35.4]
+}
+
+# B. 主題探索路徑
+CURATED_PATHS = {
+    "🌟 神蹟之路": {"keywords": ["醫治", "趕鬼", "變水為酒", "五餅二魚", "復活"], "desc": "見證耶穌的大能與憐憫"},
+    "🔥 受難週": {"filter_season": ["週日", "週一", "週二", "週三", "週四", "週五", "週六"], "desc": "最後七天的關鍵時刻"},
+    "⛰️ 登山寶訓": {"keywords": ["八福", "登山寶訓", "禱告", "論"], "desc": "天國子民的生活準則"},
+    "💧 約翰獨家": {"special_logic": "john_only", "desc": "約翰福音獨有的深刻對話"}
+}
+
+# C. 生命處方籤情境
+LIFE_SCENARIOS = {
+    "😟 焦慮/擔憂": {"keywords": ["平安", "不要怕", "信心", "風浪"], "msg": "祂是平靜風浪的主，把主權交給祂。", "theme": "保護、信實"},
+    "😔 孤單/被遺忘": {"keywords": ["接納", "尋找", "痲瘋", "婦人"], "msg": "耶穌看見你了，在祂眼中你是無價之寶。", "theme": "恩典、接納"},
+    "😡 憤怒/無法原諒": {"keywords": ["饒恕", "愛仇敵", "憐憫"], "msg": "饒恕是釋放自己，讓神的愛流進來。", "theme": "憐憫、同理"},
+    "😫 罪惡感/軟弱": {"keywords": ["呼召", "罪人", "悔改", "稅吏"], "msg": "健康的人不需要醫生，祂正是為你而來。", "theme": "恩典、悔改"}
+}
+
+# ==========================================
+# 3. 核心函數庫
+# ==========================================
 
 @st.cache_data
 def load_data():
     try:
         df = pd.read_csv("data.csv")
-        df['DateOrder'] = range(len(df)) # 建立順序索引
+        # 1. 建立福音書 Flag
+        for g in ['太', '可', '路', '約']:
+            df[f'有_{g}'] = df[f'經文_{g}'].notna()
+        # 2. 建立座標
+        df['lat'] = df['地點'].map(lambda x: LOCATION_COORDS.get(x, [None, None])[0] if pd.notna(x) else None)
+        df['lon'] = df['地點'].map(lambda x: LOCATION_COORDS.get(x, [None, None])[1] if pd.notna(x) else None)
+        # 3. 建立順序索引
+        df['Order'] = range(len(df))
         return df
     except FileNotFoundError:
         return None
 
-def create_ics_file(plan_data, start_date):
-    """生成行事曆檔案內容 (.ics format)"""
-    ics_content = [
-        "BEGIN:VCALENDAR",
-        "VERSION:2.0",
-        "PRODID:-//Re:Jesus//Reading Plan//EN",
-        "CALSCALE:GREGORIAN"
-    ]
-    
-    current_date = start_date
-    date_format = "%Y%m%d"
-    
+def create_ics(plan_data, start_date):
+    """生成 ICS 行事曆檔案"""
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Re:Jesus//Plan//EN"]
+    curr = start_date
     for day, events in plan_data.items():
-        # 每日標題
-        day_summary = f"Re:Jesus 讀經計畫 (Day {day})"
-        description = "\\n".join([f"{e['id']} {e['name']} ({e['ref']})" for e in events])
-        
-        # 建立當日全天事件
-        dt_start = current_date.strftime(date_format)
-        dt_end = (current_date + timedelta(days=1)).strftime(date_format)
-        
-        event_block = [
-            "BEGIN:VEVENT",
-            f"UID:{uuid.uuid4()}",
-            f"DTSTART;VALUE=DATE:{dt_start}",
-            f"DTEND;VALUE=DATE:{dt_end}",
-            f"SUMMARY:{day_summary}",
-            f"DESCRIPTION:{description}",
-            "END:VEVENT"
-        ]
-        ics_content.extend(event_block)
-        current_date += timedelta(days=1)
-        
-    ics_content.append("END:VCALENDAR")
-    return "\n".join(ics_content)
+        dt_start = curr.strftime("%Y%m%d")
+        dt_end = (curr + timedelta(days=1)).strftime("%Y%m%d")
+        desc = "\\n".join([f"{e['name']} ({e['ref']})" for e in events])
+        lines.extend([
+            "BEGIN:VEVENT", f"UID:{uuid.uuid4()}",
+            f"DTSTART;VALUE=DATE:{dt_start}", f"DTEND;VALUE=DATE:{dt_end}",
+            f"SUMMARY:Re:Jesus Day {day}", f"DESCRIPTION:{desc}", "END:VEVENT"
+        ])
+        curr += timedelta(days=1)
+    lines.append("END:VCALENDAR")
+    return "\n".join(lines)
 
-# --- 4. 主程式 ---
+def generate_markdown(row):
+    """生成小組教材"""
+    return f"""
+# 📖 查經：{row['事件名稱']}
+### 1. 🧊 破冰
+本週有沒有發生什麼事讓你想到「{row['神學主題']}」？
+### 2. 🧐 觀察
+* **經文**：{row['經文總覽']} ({row['地點']}/{row['季節']})
+* **事件**：{row['福音中心_原文']}
+### 3. 💡 解釋
+* **耶穌品格**：{row['耶穌品格']}
+* **核心意義**：{row['福音中心']}
+### 4. 🏃 應用
+* 這件事如何挑戰或安慰你？
+* 你本週可以如何回應？
+"""
+
+# ==========================================
+# 4. 主程式邏輯
+# ==========================================
 def main():
     df = load_data()
     if df is None:
-        st.error("❌ 請確認 data.csv 是否存在")
+        st.error("❌ 找不到 data.csv，請確認檔案已上傳至 GitHub。")
         return
 
-    # --- 側邊欄 ---
+    # --- 側邊欄導航 ---
     with st.sidebar:
-        st.title("✝️ Re:Jesus 6.0")
-        st.caption("終極每日同行版")
-        menu = st.radio("功能選擇", ["📅 讀經計畫生成", "🏆 聖經知識王", "📊 神學熱力圖", "💬 AI 導覽員"])
+        st.title("✝️ Re:Jesus 7.0")
+        st.caption("全功能終極整合版")
+        
+        menu_options = [
+            "🏠 首頁總覽",
+            "🔍 資料庫查詢",
+            "🗺️ 互動地圖",
+            "👣 主題探索路徑",
+            "💊 生命處方籤",
+            "📊 數據分析 & 歷史軌跡",
+            "📝 工具箱 (讀經/教材)",
+            "🏆 聖經知識王",
+            "🔢 福音對照透視"
+        ]
+        selection = st.radio("功能選單", menu_options)
         st.divider()
-        st.info(f"資料庫版本: v{len(df)}")
+        st.info(f"📚 收錄 {len(df)} 筆事件")
 
-    # === 功能 1: 讀經計畫生成 (Calendar) ===
-    if menu == "📅 讀經計畫生成":
-        st.header("📅 打造你的專屬讀經計畫")
-        st.markdown("輸入你想花幾天讀完耶穌生平，系統會為你安排進度，並產生行事曆檔案。")
+    # ==========================================
+    # 頁面 1: 首頁總覽
+    # ==========================================
+    if selection == "🏠 首頁總覽":
+        st.header("歡迎來到 Re:Jesus")
+        st.markdown("一個讓所有人**輕鬆、無痛、深度**認識耶穌的互動平台。")
         
-        c1, c2 = st.columns(2)
-        with c1:
-            days = st.number_input("你想花幾天讀完？", min_value=7, max_value=365, value=40)
-        with c2:
-            start_date = st.date_input("從哪一天開始？", datetime.today())
-
-        if st.button("🚀 生成計畫", type="primary"):
-            # 計算邏輯
-            total_events = len(df)
-            events_per_day = total_events / days
-            
-            plan_preview = {}
-            events_buffer = []
-            
-            # 分配事件
-            current_day = 1
-            idx = 0
-            while idx < total_events:
-                end_idx = int(current_day * events_per_day)
-                if current_day == days: end_idx = total_events # 最後一天包含剩下所有
-                
-                day_events = df.iloc[idx:end_idx]
-                
-                # 儲存資料供預覽與下載
-                event_list = []
-                for _, row in day_events.iterrows():
-                    event_list.append({
-                        "id": row['EventID'],
-                        "name": row['事件名稱'],
-                        "ref": row['經文總覽']
-                    })
-                
-                plan_preview[current_day] = event_list
-                idx = end_idx
-                current_day += 1
-
-            # 顯示下載按鈕
-            ics_string = create_ics_file(plan_preview, start_date)
-            st.success(f"已成功規劃 {days} 天的旅程！")
-            
-            st.download_button(
-                label="📅 加入我的行事曆 (下載 .ics 檔)",
-                data=ics_string,
-                file_name="ReJesus_Reading_Plan.ics",
-                mime="text/calendar"
-            )
-            
-            # 顯示預覽表格
-            st.subheader("📋 計畫預覽")
-            for d, evs in list(plan_preview.items())[:5]: # 只顯示前5天
-                with st.expander(f"Day {d} (預計閱讀 {len(evs)} 個事件)"):
-                    for e in evs:
-                        st.markdown(f"- **{e['name']}** : {e['ref']}")
-            if days > 5:
-                st.caption("... (後續天數請下載行事曆查看)")
-
-    # === 功能 2: 聖經知識王 (Gamification) ===
-    elif menu == "🏆 聖經知識王":
-        st.header("🏆 挑戰：你有多認識耶穌？")
-        st.markdown("測試看看你對耶穌生平細節的熟悉度！")
+        # 關鍵指標
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("記載事件", len(df))
+        c2.metric("涵蓋地點", df['地點'].nunique())
+        c3.metric("神學主題", df['神學主題'].nunique())
+        c4.metric("引用經文", "四福音書")
         
-        # 初始化 Session State
-        if 'quiz_q' not in st.session_state:
-            st.session_state.quiz_q = None
-            st.session_state.quiz_opt = []
-            st.session_state.quiz_ans = None
-            st.session_state.quiz_revealed = False
+        st.divider()
+        
+        # 每日一瞥
+        if st.button("✨ 隨機抽取今日靈糧", type="primary"):
+            row = df.sample(1).iloc[0]
+            st.markdown(f"""
+            <div class="highlight-box">
+                <h3>{row['事件名稱']}</h3>
+                <p><b>📍 {row['地點']} | 🗓️ {row['季節']}</b></p>
+                <p style="font-size:1.1em;">{row['福音中心']}</p>
+                <hr>
+                <p><i>{row['經文總覽']}</i></p>
+            </div>
+            """, unsafe_allow_html=True)
 
-        # 出題邏輯
-        if st.session_state.quiz_q is None or st.button("🔄 下一題"):
-            # 隨機選一個事件
-            target = df.sample(1).iloc[0]
-            st.session_state.quiz_ans = target['地點']
+    # ==========================================
+    # 頁面 2: 資料庫查詢
+    # ==========================================
+    elif selection == "🔍 資料庫查詢":
+        st.header("📂 完整資料庫")
+        
+        c1, c2, c3 = st.columns(3)
+        search = c1.text_input("🔍 關鍵字搜尋")
+        loc_filter = c2.multiselect("📍 地點", df['地點'].unique())
+        theme_filter = c3.multiselect("💡 主題", df['神學主題'].unique())
+        
+        out = df.copy()
+        if search:
+            out = out[out.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)]
+        if loc_filter:
+            out = out[out['地點'].isin(loc_filter)]
+        if theme_filter:
+            out = out[out['神學主題'].isin(theme_filter)]
             
-            # 題目：這個事件發生在哪裡？
-            st.session_state.quiz_q = f"請問 **「{target['事件名稱']}」** 發生在哪裡？"
-            st.session_state.quiz_target_row = target
+        st.write(f"共找到 {len(out)} 筆資料")
+        st.dataframe(
+            out[['EventID', '季節', '地點', '事件名稱', '神學主題', '福音中心', '經文總覽']],
+            hide_index=True, use_container_width=True
+        )
+
+    # ==========================================
+    # 頁面 3: 互動地圖
+    # ==========================================
+    elif selection == "🗺️ 互動地圖":
+        st.header("🌍 耶穌的行蹤地圖")
+        
+        map_data = df.dropna(subset=['lat', 'lon'])
+        
+        # 調整地圖點大小
+        map_counts = map_data.groupby(['lat', 'lon', '地點']).size().reset_index(name='count')
+        map_counts['size'] = map_counts['count'] * 50
+        
+        st.map(map_counts, latitude='lat', longitude='lon', size='size', color='#FF4B4B', zoom=7)
+        
+        st.caption("註：地圖顯示耶穌事工的主要發生地。圓點越大代表發生在該處的事件越多。")
+
+    # ==========================================
+    # 頁面 4: 主題探索路徑
+    # ==========================================
+    elif selection == "👣 主題探索路徑":
+        st.header("👣 跟隨耶穌的腳蹤")
+        path_name = st.selectbox("選擇一條路徑開始：", list(CURATED_PATHS.keys()))
+        info = CURATED_PATHS[path_name]
+        
+        st.info(info['desc'])
+        
+        # 篩選邏輯
+        p_df = df.copy()
+        if "keywords" in info:
+            mask = p_df.apply(lambda r: any(k in str(r['事件名稱']) for k in info['keywords']), axis=1)
+            p_df = p_df[mask]
+        elif "filter_season" in info:
+            mask = p_df['季節'].apply(lambda x: any(d in str(x) for d in info['filter_season']))
+            p_df = p_df[mask]
+        elif "special_logic" in info:
+            p_df = p_df[p_df['有_約'] & ~p_df['有_太'] & ~p_df['有_可'] & ~p_df['有_路']]
             
-            # 產生選項 (1個正確 + 3個錯誤)
-            options = set([target['地點']])
-            while len(options) < 4:
-                options.add(df.sample(1).iloc[0]['地點'])
-            st.session_state.quiz_opt = list(options)
-            st.session_state.quiz_revealed = False
+        st.success(f"此路徑包含 {len(p_df)} 個站點")
+        for i, row in p_df.reset_index().iterrows():
+            with st.expander(f"Step {i+1}: {row['事件名稱']} ({row['地點']})"):
+                st.write(row['福音中心'])
+                st.caption(f"經文：{row['經文總覽']}")
+
+    # ==========================================
+    # 頁面 5: 生命處方籤
+    # ==========================================
+    elif selection == "💊 生命處方籤":
+        st.header("💊 心靈急診室")
+        feeling = st.selectbox("你現在感覺如何？", list(LIFE_SCENARIOS.keys()))
+        
+        if st.button("取得回應"):
+            scen = LIFE_SCENARIOS[feeling]
+            # 顯示卡片
+            st.markdown(f"""
+            <div class="highlight-box" style="border-left: 5px solid #0066cc;">
+                <h3>🩺 處方：{scen['msg']}</h3>
+                <p>推薦專注主題：<b>{scen['theme']}</b></p>
+            </div>
+            """, unsafe_allow_html=True)
             
-            # 強制刷新按鈕狀態
-            st.rerun()
-
-        # 顯示題目
-        st.markdown(f"### ❓ {st.session_state.quiz_q}")
-        st.markdown(f"> 提示：{st.session_state.quiz_target_row['福音中心']}")
-        
-        # 顯示選項按鈕
-        if not st.session_state.quiz_revealed:
-            cols = st.columns(2)
-            for i, opt in enumerate(st.session_state.quiz_opt):
-                if cols[i % 2].button(opt, key=f"opt_{i}"):
-                    if opt == st.session_state.quiz_ans:
-                        st.success(f"🎉 答對了！就是 {opt}！")
-                        st.balloons()
-                    else:
-                        st.error(f"❌ 答錯了... 正確答案是 {st.session_state.quiz_ans}")
-                    
-                    st.session_state.quiz_revealed = True
-                    st.rerun()
-        else:
-            # 揭曉答案後的畫面
-            st.info(f"正確答案：**{st.session_state.quiz_ans}**")
-            st.markdown("---")
-            st.markdown(f"**📖 事件詳情**：")
-            st.write(st.session_state.quiz_target_row['事件名稱'])
-            st.caption(st.session_state.quiz_target_row['經文總覽'])
-
-    # === 功能 3: 神學熱力圖 (Analytics) ===
-    elif menu == "📊 神學熱力圖":
-        st.header("📊 地點 vs 神學主題 透視")
-        st.markdown("這張圖表展示了耶穌在「不同地點」主要都在教導或經歷「什麼主題」。圓點越大/顏色越深，代表事件越多。")
-        
-        # 資料聚合
-        heatmap_data = df.groupby(['地點', '神學主題']).size().reset_index(name='次數')
-        
-        # 過濾掉次數太少的，避免圖表太亂
-        heatmap_data = heatmap_data[heatmap_data['次數'] > 0]
-        
-        # Altair 圖表
-        chart = alt.Chart(heatmap_data).mark_circle().encode(
-            x=alt.X('地點', sort=None),
-            y=alt.Y('神學主題', sort=None),
-            size='次數',
-            color=alt.Color('次數', scale=alt.Scale(scheme='orangered')),
-            tooltip=['地點', '神學主題', '次數']
-        ).properties(
-            height=600
-        ).interactive()
-        
-        st.altair_chart(chart, use_container_width=True)
-        st.info("💡 觀察：你可以看到「耶路撒冷」集中了許多關於「受難、彌賽亞」的主題，而「加利利」則更多關於「神蹟、呼召」。")
-
-    # === 功能 4: AI 導覽員 (Chat - 保留) ===
-    elif menu == "💬 AI 導覽員":
-        st.header("💬 與資料對話")
-        st.markdown("輸入你的感受或關鍵字，讓系統為你尋找相關經文。")
-        
-        # 簡易聊天邏輯
-        if "messages" not in st.session_state:
-            st.session_state.messages = [{"role": "assistant", "content": "平安！您今天想了解耶穌的什麼事蹟？或是有什麼心情想分享？"}]
-
-        for msg in st.session_state.messages:
-            st.chat_message(msg["role"]).write(msg["content"])
-
-        if prompt := st.chat_input("輸入關鍵字 (例如: 焦慮, 信心, 醫治)..."):
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            st.chat_message("user").write(prompt)
-            
-            # 搜尋
-            mask = df.apply(lambda r: prompt in str(r['事件名稱']) or prompt in str(r['福音中心']) or prompt in str(r['神學主題']), axis=1)
-            res = df[mask]
-            
+            # 推薦經文
+            mask = df.apply(lambda r: any(k in str(r['事件名稱']) or k in str(r['福音中心']) for k in scen['keywords']), axis=1)
+            res = df[mask].head(3)
             if not res.empty:
-                reply = f"找到 {len(res)} 筆相關資料：\n\n"
-                for i, row in res.head(3).iterrows():
-                    reply += f"🔹 **{row['事件名稱']}** ({row['地點']})\n> {row['福音中心']}\n\n"
-                reply += "..."
-            else:
-                reply = "抱歉，資料庫中暫時沒有找到直接相關的事件。試試看「神蹟」或「禱告」？"
+                st.markdown("### 📖 推薦閱讀")
+                for _, r in res.iterrows():
+                    st.markdown(f"- **{r['事件名稱']}**：{r['福音中心']}")
+
+    # ==========================================
+    # 頁面 6: 數據分析 & 歷史軌跡
+    # ==========================================
+    elif selection == "📊 數據分析 & 歷史軌跡":
+        st.header("📊 數據透視")
+        
+        tab1, tab2 = st.tabs(["📅 時空軌跡", "🔥 神學熱力圖"])
+        
+        with tab1:
+            st.markdown("耶穌3.5年事工的時間軸分佈 (顏色代表不同時期/季節)")
+            chart_time = alt.Chart(df).mark_circle(size=80).encode(
+                x=alt.X('Order', title='時間順序'),
+                y=alt.Y('地點', sort='-x'),
+                color='季節',
+                tooltip=['事件名稱', '地點', '福音中心']
+            ).interactive()
+            st.altair_chart(chart_time, use_container_width=True)
             
-            st.session_state.messages.append({"role": "assistant", "content": reply})
-            st.chat_message("assistant").write(reply)
+        with tab2:
+            st.markdown("地點 vs 神學主題的關聯性 (圓點越大代表越常出現)")
+            heat_data = df.groupby(['地點', '神學主題']).size().reset_index(name='count')
+            heat_data = heat_data[heat_data['count'] > 0]
+            chart_heat = alt.Chart(heat_data).mark_circle().encode(
+                x='地點', y='神學主題', size='count', color='count',
+                tooltip=['地點', '神學主題', 'count']
+            ).interactive()
+            st.altair_chart(chart_heat, use_container_width=True)
+
+    # ==========================================
+    # 頁面 7: 工具箱 (讀經/教材)
+    # ==========================================
+    elif selection == "📝 工具箱 (讀經/教材)":
+        st.header("🛠️ 實用工具箱")
+        t1, t2 = st.tabs(["📅 生成讀經計畫", "📄 生成小組教材"])
+        
+        with t1:
+            st.subheader("打造專屬讀經計畫 (.ics)")
+            days = st.number_input("你想花幾天讀完？", 7, 365, 30)
+            start_d = st.date_input("開始日期", datetime.today())
+            
+            if st.button("生成計畫檔案"):
+                per_day = len(df) / days
+                plan = {}
+                idx = 0
+                for d in range(1, days + 1):
+                    end = int(d * per_day)
+                    if d == days: end = len(df)
+                    day_events = []
+                    for _, r in df.iloc[idx:end].iterrows():
+                        day_events.append({"name": r['事件名稱'], "ref": r['經文總覽']})
+                    plan[d] = day_events
+                    idx = end
+                
+                ics_data = create_ics(plan, start_d)
+                st.download_button("📥 下載行事曆 (.ics)", ics_data, "My_ReJesus_Plan.ics", "text/calendar")
+                st.success("檔案已生成！請下載後匯入 Google/Apple 行事曆。")
+
+        with t2:
+            st.subheader("一鍵生成小組教材")
+            evt = st.selectbox("選擇事件", df['事件名稱'].unique())
+            row = df[df['事件名稱'] == evt].iloc[0]
+            md = generate_markdown(row)
+            
+            st.markdown("---")
+            c1, c2 = st.columns([2,1])
+            with c1:
+                st.markdown(md)
+            with c2:
+                st.download_button("📥 下載教材 (.md)", md, f"Study_{evt}.md", "text/markdown")
+
+    # ==========================================
+    # 頁面 8: 聖經知識王
+    # ==========================================
+    elif selection == "🏆 聖經知識王":
+        st.header("🏆 知識挑戰")
+        if 'quiz_idx' not in st.session_state:
+            st.session_state.quiz_idx = random.randint(0, len(df)-1)
+            st.session_state.quiz_revealed = False
+
+        q_row = df.iloc[st.session_state.quiz_idx]
+        
+        st.markdown(f"### ❓ 題目：**「{q_row['事件名稱']}」** 發生在哪裡？")
+        st.caption(f"提示：{q_row['福音中心']}")
+        
+        # 選項
+        opts = list(set([q_row['地點']] + df['地點'].sample(3).tolist()))
+        random.shuffle(opts)
+        
+        cols = st.columns(2)
+        for i, opt in enumerate(opts):
+            if cols[i%2].button(opt, key=opt):
+                if opt == q_row['地點']:
+                    st.success("🎉 答對了！")
+                    st.balloons()
+                else:
+                    st.error(f"❌ 答錯了... 正確答案是 {q_row['地點']}")
+                st.session_state.quiz_revealed = True
+        
+        if st.session_state.quiz_revealed:
+            if st.button("🔄 下一題"):
+                st.session_state.quiz_idx = random.randint(0, len(df)-1)
+                st.session_state.quiz_revealed = False
+                st.rerun()
+
+    # ==========================================
+    # 頁面 9: 福音對照透視
+    # ==========================================
+    elif selection == "🔢 福音對照透視":
+        st.header("🔢 四福音書合參透視")
+        
+        filter_type = st.radio("篩選模式", ["全部", "四福音皆有 (核心)", "僅約翰福音 (獨家)"], horizontal=True)
+        
+        v_df = df.copy()
+        if filter_type == "四福音皆有 (核心)":
+            v_df = v_df[v_df['有_太'] & v_df['有_可'] & v_df['有_路'] & v_df['有_約']]
+        elif filter_type == "僅約翰福音 (獨家)":
+            v_df = v_df[v_df['有_約'] & ~v_df['有_太'] & ~v_df['有_可'] & ~v_df['有_路']]
+            
+        for _, r in v_df.iterrows():
+            with st.container():
+                c1, c2 = st.columns([3, 2])
+                c1.markdown(f"**{r['事件名稱']}**")
+                c1.caption(r['福音中心'])
+                
+                badges = ""
+                for g in ['太', '可', '路', '約']:
+                    color = "#28a745" if r[f'有_{g}'] else "#e2e6ea"
+                    badges += f"<span style='background-color:{color}; color:white; padding:2px 6px; border-radius:4px; margin-right:4px; font-size:0.8em'>{g}</span>"
+                c2.markdown(badges, unsafe_allow_html=True)
+                st.divider()
 
 if __name__ == "__main__":
     main()
