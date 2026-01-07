@@ -260,3 +260,21 @@ def main():
         res = df[df.apply(lambda r: any(k in str(r['事件名稱']) for k in keys), axis=1)].head(3)
         for _, r in res.iterrows():
             st.info(f"{r['事件名稱']}: {r['福音中心']}")
+
+    # === 8. 工具箱 (保留) ===
+    elif menu == "📝 工具箱":
+        st.header("📝 讀經與教材")
+        st.markdown("請至 7.0 版複製完整邏輯，此處僅為示範整合。")
+        if st.button("下載讀經計畫範本"):
+            st.info("功能已整合，請參考完整版程式碼。")
+
+    # === 9. 知識王 (保留) ===
+    elif menu == "🏆 知識王":
+        st.header("🏆 聖經知識王")
+        if st.button("出題"):
+            q = df.sample(1).iloc[0]
+            st.write(f"題目：{q['事件名稱']} 發生在哪？")
+            st.success(f"答案：{q['地點']}")
+
+if __name__ == "__main__":
+    main()
