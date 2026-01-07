@@ -21,47 +21,49 @@ BOOK_MAP = {
 }
 
 # --- 3. 定義抓取經文的函數 ---
-@st.cache_data(ttl=86400) # 設定快取，抓過一次就不用再抓，速度會變快
+@st.cache_data(ttl=86400)
 def fetch_bible_text(ref_string):
-    """
-    輸入: "Mt 5:3" 或 "太 5:3"
-    輸出: "虛心的人有福了..." (繁體中文)
-    """
     if pd.isna(ref_string): return None
-    
-    # 清理字串
     ref_string = str(ref_string).strip()
     
     try:
-        # A. 拆解書卷名與章節
-        # 處理沒有空格的情況 (如 "Mt5:3")
+        # --- 除錯步驟 A: 檢查輸入 ---
+        # st.write(f"正在處理: {ref_string}") # 想看詳細可以取消這行註解
+
         import re
         if " " not in ref_string:
             ref_string = re.sub(r"([a-zA-Z\u4e00-\u9fa5]+)(\d)", r"\1 \2", ref_string)
             
         parts = ref_string.split(maxsplit=1)
-        book_abbr = parts[0] # 例如 "Mt" 或 "太"
-        verse = parts[1]     # 例如 "5:3"
+        if len(parts) < 2:
+            st.error(f"格式錯誤，無法拆分章節: {ref_string}") # 顯示錯誤
+            return None
+
+        book_abbr = parts[0]
+        verse = parts[1]
         
-        # B. 查表轉換 (把 "太" 轉成 "Matthew")
+        # --- 除錯步驟 B: 檢查對照表 ---
         api_book = BOOK_MAP.get(book_abbr, book_abbr)
+        # st.write(f"書卷轉換: {book_abbr} -> {api_book}") # 想看詳細可以取消這行註解
         
-        # C. 呼叫 API (使用 bible-api.com，免費且支援 CUV 和合本)
         url = f"https://bible-api.com/{api_book}+{verse}?translation=cuv"
         response = requests.get(url, timeout=5)
         
         if response.status_code == 200:
             data = response.json()
-            simplified_text = data['text']
-            
-            # D. 繁簡轉換並回傳
-            return cc.convert(simplified_text)
+            # 檢查 API 是否真的回傳了經文
+            if 'text' not in data or not data['text']:
+                st.warning(f"API 有回應但無經文: {url}")
+                return None
+            return cc.convert(data['text'])
         else:
-            return None # 抓取失敗
+            st.error(f"API 連線失敗 (代碼 {response.status_code}): {url}") # 顯示錯誤
+            return None
             
-    except Exception:
+    except Exception as e:
+        st.error(f"程式發生錯誤: {e}") # 顯示錯誤
         return None
-
+        
 # --- 4. 主程式 ---
 def main():
     st.title("✝️ Re:Jesus 經文查詢測試")
